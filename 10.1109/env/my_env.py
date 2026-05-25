@@ -111,10 +111,12 @@ class VEC(gym.Env):
         self.dag.nodes[node]["available"],
         """
         self.total_actions = self._num_task_graph_nodes * self.num_locations
-        self.action_space = spaces.Box(low=0.0,high=1.0,
-                                       shape=(self.total_actions,),
-                                       dtype=np.float32)
+        self.action_space = spaces.Box(low=-1.0, high=1.0,
+            shape=(self.total_actions,),
+            dtype=np.float32,
+        )
         
+
         self.observation_space = spaces.Dict(
             {
                 "node_features": spaces.Box(
@@ -205,7 +207,7 @@ class VEC(gym.Env):
 
         return self._get_observation(), self._get_info()
 
-    def _decode_action_node(self, flat_index):
+    def _decode_action_node(self, flat_index)->tuple | int:
         if flat_index == 0:
             return 0
 
@@ -213,12 +215,28 @@ class VEC(gym.Env):
         node_id = (flat_index - 1) % (self.num_nodes + 1) + 1
         return (task_id, node_id)
 
-    def _encode_node(self, node):
+    def _encode_node(self, node) -> int:
         if node == 0:
             return 0
 
         task_id, node_id = node
         return 1 + task_id * (self.num_nodes + 1) + (node_id - 1)
+
+    def action_masks(self):
+        mask = np.zeros(self.total_actions, dtype=bool)
+
+        for node in self.dag.nodes:
+            if not self._is_schedulable(node):
+                continue
+
+            node_idx = self._encode_node(node)
+
+            start = node_idx * self.num_locations # type: ignore
+            end = start + self.num_locations # type: ignore
+
+            mask[start:end] = True
+
+        return mask
 
     def _is_schedulable(self, node):
         if node == 0:
@@ -227,11 +245,12 @@ class VEC(gym.Env):
         attr = self.dag.nodes[node]
         return attr["available"] == 1 and attr["scheduled_location"] == -1
 
-# TODO
+# still not sure
     def _get_info(self):
-        
         return {
-            
+            "action_mask": self.action_masks(),
+            "node_action_mask": np.flatnonzero(self.action_masks()),
+            "makespan": self.reward_calculator.calculate_makespan(self.scheduler),
         }
 
     def _update_vehicle_positions(self):
@@ -309,4 +328,91 @@ class VEC(gym.Env):
             "trajectory": trajectory,
             "locations": np.array(locations, dtype=np.float32),
             "node_runtime": np.array(node_runtime, dtype=np.float32),
-        }
+        } 
+    def step(self, action):
+
+        action = np.asarray(action, dtype=np.float32)
+
+        terminated = False
+        truncated = False
+        invalid_reward = -1.0
+
+        mask = self.action_masks()
+
+        if not np.any(mask):
+            return (
+                self._get_observation(),
+                -1.0,
+                True,
+                truncated,
+                {"invalid_reason": "no_valid_actions"},
+            )
+
+        # مهم‌ترین خط: masking واقعی continuous space
+        masked_action = np.where(mask, action, -np.inf)
+
+        flat_action = int(np.argmax(masked_action))
+
+        flat_node_id = flat_action // self.num_locations # type: ignore
+        location_id = flat_action % self.num_locations # type: ignore
+
+        node_id = self._decode_action_node(flat_node_id)
+
+        if node_id not in self.dag.nodes:
+            return self._get_observation(), invalid_reward, False, truncated, {"invalid_reason": "unknown_node"}
+
+        if location_id not in self.devices:
+            return self._get_observation(), invalid_reward, False, truncated, {"invalid_reason": "unknown_location"}
+
+        if not self._is_schedulable(node_id):
+            return self._get_observation(), invalid_reward, False, truncated, {"invalid_reason": "node_not_schedulable"}
+
+        self._update_vehicle_positions()
+
+        self.scheduler.schedule_node(node_id=node_id, device_id=location_id)
+        self.scheduler.update_available_nodes()
+
+        current_makespan = self.reward_calculator.calculate_makespan(self.scheduler)
+
+        local_baseline = self.reward_calculator.estimate_local_completion(
+            self.dag,
+            self.devices,
+        )
+
+        reward = self.reward_calculator.compute_scaled_reward(
+            previous_makespan=self.previous_makespan,
+            current_makespan=current_makespan,
+            local_baseline=local_baseline,
+        )
+
+        self.previous_makespan = current_makespan
+
+        if self.scheduler.is_all_scheduled():
+            terminated = True
+            reward += self.reward_calculator.final_reward(
+                self.scheduler,
+                self.dag,
+                self.devices,
+            )
+
+        return self._get_observation(), reward, terminated, truncated, self._get_info()
+    def get_valid_actions(self):
+        return np.flatnonzero(self.action_masks())
+    def render(self):
+        print("\n========== DAG STATE ==========")
+        for node in sorted(self.dag.nodes, key=node_sort_key):
+            attr = self.dag.nodes[node]
+            print(
+                f"Node {node} | "
+                f"avail={attr['available']} | "
+                f"loc={attr['scheduled_location']}"
+            )
+
+        print("\n========== SCHEDULE ==========")
+        for node, info in self.scheduler.node_schedule_info.items():
+            print(
+                f"Node {node} -> "
+                f"Device {info['device_id']} | "
+                f"EST={info['EST']:.4f} | "
+                f"CT={info['CT']:.4f}"
+            )
