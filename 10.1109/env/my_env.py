@@ -8,7 +8,7 @@ except ImportError:
     from reward import RewardCalculator
     from scheduler import ComputeNode, Scheduler
     from transmission import TransmissionModel
-
+from collections import deque
 import random
 import numpy as np
 import gymnasium as gym
@@ -68,7 +68,7 @@ class VEC(gym.Env):
     """
     main body of paper
     """
-    def __init__(self, num_ve:int = 5, num_ves:int = 1, num_nodes:int = 5):
+    def __init__(self, num_ve:int = 5, num_ves:int = 1, num_nodes:int = 5,history_len:int =8):
         
         super(VEC, self).__init__()
         self.num_ve = num_ve
@@ -100,6 +100,7 @@ class VEC(gym.Env):
         )
 
 
+        self.history_len = history_len
         self.node_feature_dim = 6
         """
         because:
@@ -151,7 +152,10 @@ class VEC(gym.Env):
                 ),
             }
         )
-        
+        self.trajectory_buffers = {
+            vehicle_id: deque(maxlen=self.history_len)
+            for vehicle_id in range(self.num_ve)
+            }
         self.reset()
 
     def _build_devices(self):
@@ -204,6 +208,19 @@ class VEC(gym.Env):
         )
         self.scheduler.update_available_nodes()
         self.previous_makespan = 0.0
+        for vehicle_id in range(self.num_ve):
+
+            state = [
+                self.mobility_models[vehicle_id].x,
+                self.mobility_models[vehicle_id].y,
+                self.mobility_models[vehicle_id].velocity,
+                self.mobility_models[vehicle_id].acceleration,
+                self.mobility_models[vehicle_id].heading,
+            ]
+
+            for _ in range(self.history_len):
+                self.trajectory_buffers[vehicle_id].append(state)
+
 
         return self._get_observation(), self._get_info()
 
@@ -258,7 +275,15 @@ class VEC(gym.Env):
             mobility.step(dt=1.0)
             self.devices[device_id].x = mobility.x
             self.devices[device_id].y = mobility.y
+            state = [
+                mobility.x,
+                mobility.y,
+                mobility.velocity,
+                mobility.acceleration,
+                mobility.heading,
+            ]
 
+            self.trajectory_buffers[device_id].append(state)
     
     def _get_observation(self):
         ordered_nodes = sorted(self.dag.nodes, key=node_sort_key)
@@ -283,15 +308,10 @@ class VEC(gym.Env):
         for source, target in self.dag.edges:
             adj[node_to_idx[source], node_to_idx[target]] = 1.0
 
+        
         trajectory = np.array(
             [
-                [
-                    self.mobility_models[vehicle_id].x,
-                    self.mobility_models[vehicle_id].y,
-                    self.mobility_models[vehicle_id].velocity,
-                    self.mobility_models[vehicle_id].acceleration,
-                    self.mobility_models[vehicle_id].heading,
-                ]
+                list(self.trajectory_buffers[vehicle_id])
                 for vehicle_id in range(self.num_ve)
             ],
             dtype=np.float32,
