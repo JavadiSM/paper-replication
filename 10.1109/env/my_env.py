@@ -436,3 +436,61 @@ class VEC(gym.Env):
                 f"EST={info['EST']:.4f} | "
                 f"CT={info['CT']:.4f}"
             )
+
+
+if __name__ == "__main__":
+    env = VEC(
+        num_ve=3,
+        num_ves=1,
+        num_nodes=4,
+        history_len=4,
+    )
+
+    obs, info = env.reset()
+
+    print("=== ENV RESET ===")
+
+    print("\nTrajectory shape:")
+    print(obs["trajectory"].shape)
+
+    print("\nInitial trajectory matrix:")
+    print(obs["trajectory"])
+
+    done = False
+    step_count = 0
+    max_steps = 10
+
+    while not done and step_count < max_steps:
+
+        valid_actions = env.get_valid_actions()
+
+        if len(valid_actions) == 0:
+            print("No valid actions left.")
+            break
+
+        action = np.random.uniform(
+            low=-1.0,
+            high=1.0,
+            size=(env.total_actions,),
+        ).astype(np.float32)
+
+        chosen_action = random.choice(valid_actions)
+        action[chosen_action] = 999.0
+
+        obs, reward, terminated, truncated, info = env.step(action)
+
+        print(f"\n========== STEP {step_count} ==========")
+
+        print("Reward:", reward)
+        print("Makespan:", info.get("makespan"))
+
+        print("\nTrajectory matrix:")
+        print(obs["trajectory"])
+
+        print("\nTrajectory shape:")
+        print(obs["trajectory"].shape)
+
+        done = terminated or truncated
+        step_count += 1
+
+    print("\n=== FINISHED ===")
