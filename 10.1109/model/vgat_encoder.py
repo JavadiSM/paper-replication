@@ -130,7 +130,7 @@ class VGATEncoder(nn.Module):
 
         return torch.stack(outputs)
 
-if False and __name__ == "__main__":
+if __name__ == "__main__":
 
     from torch_geometric.data import Data
 

@@ -135,13 +135,17 @@ class VEC(gym.Env):
                 "trajectory": spaces.Box(
                     low=-np.inf,
                     high=np.inf,
-                    shape=(self.num_ve, 5),
+                    shape=(self.num_ve,self.history_len, 5),
                     dtype=np.float32,
                 ),
                 "locations": spaces.Box(
                     low=-np.inf,
                     high=np.inf,
-                    shape=(self.num_locations, 6),
+                    shape=(
+                        self.num_locations,
+                        self.history_len,
+                        6,
+                    ),
                     dtype=np.float32,
                 ),
                 "node_runtime": spaces.Box(
@@ -156,6 +160,10 @@ class VEC(gym.Env):
             vehicle_id: deque(maxlen=self.history_len)
             for vehicle_id in range(self.num_ve)
             }
+        self.location_buffers = {
+            device_id: deque(maxlen=self.history_len)
+            for device_id in self.devices
+        }
         self.reset()
 
     def _build_devices(self):
@@ -220,6 +228,31 @@ class VEC(gym.Env):
 
             for _ in range(self.history_len):
                 self.trajectory_buffers[vehicle_id].append(state)
+        for device_id, device in self.devices.items():
+
+            task_count = 0
+
+            current_finish_time = 0.0
+
+            state = [
+
+                1.0,  # ul_channel
+
+                task_count,
+
+                device.x,
+                device.y,
+
+                device.compute_power,
+
+                current_finish_time,
+            ]
+
+            for _ in range(self.history_len):
+
+                self.location_buffers[device_id].append(state)
+
+
 
 
         return self._get_observation(), self._get_info()
@@ -284,7 +317,41 @@ class VEC(gym.Env):
             ]
 
             self.trajectory_buffers[device_id].append(state)
-    
+
+    def _update_location_buffers(self):
+
+        for device_id, device in self.devices.items():
+
+            task_count = sum(
+                1
+                for info in self.scheduler.node_schedule_info.values()
+                if info["device_id"] == device_id
+            )
+
+            current_finish_time = max(
+                (
+                    processor.available_time
+                    for processor in device.processors
+                ),
+                default=0.0,
+            )
+
+            state = [
+
+                1.0,
+
+                task_count,
+
+                device.x,
+                device.y,
+
+                device.compute_power,
+
+                current_finish_time,
+            ]
+
+            self.location_buffers[device_id].append(state)
+
     def _get_observation(self):
         ordered_nodes = sorted(self.dag.nodes, key=node_sort_key)
 
@@ -317,7 +384,6 @@ class VEC(gym.Env):
             dtype=np.float32,
         )
 
-        locations = []
         node_runtime = []
         for device_id, device in self.devices.items():
             task_count = sum(
@@ -329,19 +395,14 @@ class VEC(gym.Env):
                 (processor.available_time for processor in device.processors),
                 default=0.0,
             )
-
-            locations.append(
-                [
-                    1.0,
-                    task_count,
-                    device.x,
-                    device.y,
-                    device.compute_power,
-                    current_finish_time,
-                ]
-            )
             node_runtime.append([device.compute_power, current_finish_time])
-
+        locations = np.array(
+            [
+                list(self.location_buffers[device_id])
+                for device_id in self.devices
+            ],
+            dtype=np.float32,
+        )
         return {
             "node_features": node_features,
             "adj_matrix": adj,
@@ -391,7 +452,7 @@ class VEC(gym.Env):
 
         self.scheduler.schedule_node(node_id=node_id, device_id=location_id)
         self.scheduler.update_available_nodes()
-
+        self._update_location_buffers()
         current_makespan = self.reward_calculator.calculate_makespan(self.scheduler)
 
         local_baseline = self.reward_calculator.estimate_local_completion(

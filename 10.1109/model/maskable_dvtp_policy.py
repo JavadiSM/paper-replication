@@ -8,11 +8,16 @@ from sb3_contrib import MaskablePPO
 from stable_baselines3.common.torch_layers import ( # type: ignore
     BaseFeaturesExtractor
 )
-from model.vgat_encoder import VGATEncoder
-from model.transformer_predictor import (
-        TransformerPredictor
-)
-
+try:
+    from model.vgat_encoder import VGATEncoder
+    from model.transformer_predictor import (
+            TransformerPredictor
+    )
+except:
+    from vgat_encoder import VGATEncoder
+    from transformer_predictor import (
+            TransformerPredictor
+    )
 
 # =========================================================
 # Feature Extractor
