@@ -112,8 +112,10 @@ class VEC(gym.Env):
         self.dag.nodes[node]["available"],
         """
         self.total_actions = self._num_task_graph_nodes * self.num_locations
-        self.action_space = spaces.Box(low=-1.0, high=1.0,
-            shape=(self.total_actions,),
+        self.action_space = spaces.Box(
+            low=-1.0,
+            high=1.0,
+            shape=(2,),
             dtype=np.float32,
         )
         
@@ -257,36 +259,65 @@ class VEC(gym.Env):
 
         return self._get_observation(), self._get_info()
 
-    def _decode_action_node(self, flat_index)->tuple | int:
-        if flat_index == 0:
-            return 0
+    def _get_valid_nodes(self):
 
-        task_id = (flat_index - 1) // (self.num_nodes + 1)
-        node_id = (flat_index - 1) % (self.num_nodes + 1) + 1
-        return (task_id, node_id)
-
-    def _encode_node(self, node) -> int:
-        if node == 0:
-            return 0
-
-        task_id, node_id = node
-        return 1 + task_id * (self.num_nodes + 1) + (node_id - 1)
-
-    def action_masks(self):
-        mask = np.zeros(self.total_actions, dtype=bool)
+        valid_nodes = []
 
         for node in self.dag.nodes:
-            if not self._is_schedulable(node):
-                continue
 
-            node_idx = self._encode_node(node)
+            if self._is_schedulable(node):
+                valid_nodes.append(node)
 
-            start = node_idx * self.num_locations # type: ignore
-            end = start + self.num_locations # type: ignore
+        valid_nodes = sorted(
+            valid_nodes,
+            key=node_sort_key
+        )
 
-            mask[start:end] = True
+        return valid_nodes
+    
+    def _map_continuous_to_node(self, value):
 
-        return mask
+        valid_nodes = self._get_valid_nodes()
+
+        if len(valid_nodes) == 0:
+            return None
+
+        value = np.clip(value, -1.0, 1.0)
+
+        scaled = (value + 1.0) / 2.0
+
+        index = int(
+            scaled * len(valid_nodes)
+        )
+
+        index = min(
+            index,
+            len(valid_nodes) - 1
+        )
+
+        return valid_nodes[index]
+    
+    def _map_continuous_to_location(self, value):
+
+        device_ids = sorted(
+            list(self.devices.keys())
+        )
+
+        value = np.clip(value, -1.0, 1.0)
+
+        scaled = (value + 1.0) / 2.0
+
+        index = int(
+            scaled * len(device_ids)
+        )
+
+        index = min(
+            index,
+            len(device_ids) - 1
+        )
+
+        return device_ids[index]
+
 
     def _is_schedulable(self, node):
         if node == 0:
@@ -298,8 +329,7 @@ class VEC(gym.Env):
 # still not sure
     def _get_info(self):
         return {
-            "action_mask": self.action_masks(),
-            "node_action_mask": np.flatnonzero(self.action_masks()),
+            "valid_nodes": self._get_valid_nodes(),
             "makespan": self.reward_calculator.calculate_makespan(self.scheduler),
         }
 
@@ -418,9 +448,19 @@ class VEC(gym.Env):
         truncated = False
         invalid_reward = -1.0
 
-        mask = self.action_masks()
+        node_signal = float(action[0])
+        location_signal = float(action[1])
 
-        if not np.any(mask):
+        node_id = self._map_continuous_to_node(
+            node_signal
+        )
+
+        location_id = self._map_continuous_to_location(
+            location_signal
+        )
+
+        valid_nodes = self._get_valid_nodes()
+        if len(valid_nodes) == 0:
             return (
                 self._get_observation(),
                 -1.0,
@@ -428,16 +468,6 @@ class VEC(gym.Env):
                 truncated,
                 {"invalid_reason": "no_valid_actions"},
             )
-
-        # مهم‌ترین خط: masking واقعی continuous space
-        masked_action = np.where(mask, action, -np.inf)
-
-        flat_action = int(np.argmax(masked_action))
-
-        flat_node_id = flat_action // self.num_locations # type: ignore
-        location_id = flat_action % self.num_locations # type: ignore
-
-        node_id = self._decode_action_node(flat_node_id)
 
         if node_id not in self.dag.nodes:
             return self._get_observation(), invalid_reward, False, truncated, {"invalid_reason": "unknown_node"}
@@ -477,8 +507,7 @@ class VEC(gym.Env):
             )
 
         return self._get_observation(), reward, terminated, truncated, self._get_info()
-    def get_valid_actions(self):
-        return np.flatnonzero(self.action_masks())
+
     def render(self):
         print("\n========== DAG STATE ==========")
         for node in sorted(self.dag.nodes, key=node_sort_key):
@@ -497,6 +526,66 @@ class VEC(gym.Env):
                 f"EST={info['EST']:.4f} | "
                 f"CT={info['CT']:.4f}"
             )
+
+
+
+
+
+
+"""
+
+
+
+
+
+
+
+
+
+
+
+
+    def get_valid_actions(self):
+        return np.flatnonzero(self.action_masks())
+
+
+    def _decode_action_node(self, flat_index)->tuple | int:
+        if flat_index == 0:
+            return 0
+
+        task_id = (flat_index - 1) // (self.num_nodes + 1)
+        node_id = (flat_index - 1) % (self.num_nodes + 1) + 1
+        return (task_id, node_id)
+
+    def _encode_node(self, node) -> int:
+        if node == 0:
+            return 0
+
+        task_id, node_id = node
+        return 1 + task_id * (self.num_nodes + 1) + (node_id - 1)
+
+    def action_masks(self):
+        mask = np.zeros(self.total_actions, dtype=bool)
+
+        for node in self.dag.nodes:
+            if not self._is_schedulable(node):
+                continue
+
+            node_idx = self._encode_node(node)
+
+            start = node_idx * self.num_locations # type: ignore
+            end = start + self.num_locations # type: ignore
+
+            mask[start:end] = True
+
+        return mask
+
+
+
+
+
+        
+
 
 
 if __name__ == "__main__":
@@ -555,3 +644,10 @@ if __name__ == "__main__":
         step_count += 1
 
     print("\n=== FINISHED ===")
+"""
+
+
+
+
+
+
