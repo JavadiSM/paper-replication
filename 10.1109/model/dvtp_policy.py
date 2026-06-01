@@ -5,7 +5,7 @@ from gymnasium import spaces
 
 from stable_baselines3 import PPO # type: ignore
 
-from stable_baselines3.common.torch_layers import ( # type: ignore
+from stable_baselines3.common.torch_layers import (# type: ignore
     BaseFeaturesExtractor
 )
 
@@ -17,7 +17,14 @@ class DVTPFeatureExtractor(
     BaseFeaturesExtractor
 ):
     """
-    Faithful implementation of equations (23)-(26)
+    Equations (23)-(26)
+
+    Final state:
+        state = concat(
+            stask,
+            slocations,
+            snodes
+        )
     """
 
     def __init__(
@@ -32,27 +39,32 @@ class DVTPFeatureExtractor(
 
         # ==================================================
         # Equation (23)
+        # VGAT over DAG only
         # ==================================================
 
         self.vgat = VGATEncoder(
             node_feature_dim=6,
-            trajectory_dim=5,
             hidden_dim=64,
-            out_dim=128
+            out_dim=128,
+            num_heads=4
         )
 
         # ==================================================
         # Equation (24)
+        # Transformer over location histories
         # ==================================================
 
         self.transformer = TransformerPredictor(
             input_dim=6,
             d_model=64,
+            nhead=4,
+            num_layers=2,
             output_dim=128
         )
 
         # ==================================================
         # Equation (25)
+        # Runtime encoder
         # ==================================================
 
         self.node_mlp = nn.Sequential(
@@ -89,10 +101,6 @@ class DVTPFeatureExtractor(
 
             adj_matrix=observations[
                 "adj_matrix"
-            ],
-
-            trajectory_features=observations[
-                "trajectory"
             ]
         )
 
@@ -108,14 +116,19 @@ class DVTPFeatureExtractor(
         )
 
         # ==================================================
-        # node runtime stream
+        # runtime stream
         # ==================================================
 
         runtime = observations[
             "node_runtime"
         ]
 
-        runtime = runtime.mean(dim=1)
+        # runtime:
+        # [B, num_locations, 2]
+
+        runtime = runtime.mean(
+            dim=1
+        )
 
         snodes = self.node_mlp(
             runtime
@@ -154,6 +167,8 @@ class DVTPPPO(PPO):
 
             "features_extractor_class":
                 DVTPFeatureExtractor,
+
+            "features_extractor_kwargs": {},
 
             "net_arch": {
 

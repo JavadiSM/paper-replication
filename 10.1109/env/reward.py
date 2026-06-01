@@ -180,25 +180,123 @@ class RewardCalculator:
         self,
         previous_makespan,
         current_makespan,
-        local_baseline
+        local_baseline,
+        scheduler,
+        dag,
+        devices
     ):
         """
-        Incremental reward scaled by the local-only baseline.
+        Returns:
+            reward,
+            metrics dict
         """
+
+        # ==========================================
+        # reward
+        # ==========================================
 
         reward = self.compute_reward(
             previous_makespan,
             current_makespan
         )
 
-        if local_baseline <= 0:
-            return reward
+        if local_baseline > 0:
+            reward = reward / local_baseline
 
-        return float(
-            reward
-            /
-            local_baseline
+        reward = float(reward)
+
+        # ==========================================
+        # delay
+        # ==========================================
+
+        delay = float(current_makespan)
+
+        # ==========================================
+        # throughput
+        # ==========================================
+
+        completed_nodes = len(
+            scheduler.node_schedule_info
         )
+
+        throughput = (
+            completed_nodes / current_makespan
+            if current_makespan > 0
+            else 0.0
+        )
+
+        # ==========================================
+        # success rate
+        # ==========================================
+
+        executable_nodes = [
+
+            n for n in dag.nodes
+
+            if self.is_executable_node(n)
+        ]
+
+        total_nodes = len(executable_nodes)
+
+        success_rate = (
+            completed_nodes / total_nodes
+            if total_nodes > 0
+            else 0.0
+        )
+
+        # ==========================================
+        # energy estimation
+        # ==========================================
+
+        total_energy = 0.0
+
+        for node, info in scheduler.node_schedule_info.items():
+
+            device_id = info["device_id"]
+
+            device = devices[device_id]
+
+            ct = info["CT"]
+            est = info["EST"]
+
+            exec_time = max(
+                ct - est,
+                0.0
+            )
+
+            # simple dynamic energy model
+            # E = k * f^2 * t
+
+            k = 1e-27
+
+            energy = (
+                k
+                *
+                (device.compute_power ** 2)
+                *
+                exec_time
+            )
+
+            total_energy += energy
+
+        # ==========================================
+        # metrics
+        # ==========================================
+
+        metrics = {
+
+            "delay": delay,
+
+            "energy": float(total_energy),
+
+            "success_rate": float(success_rate),
+
+            "throughput": float(throughput),
+
+            "reward": reward,
+        }
+
+        return reward, metrics
 
     # ==================================================
     # normalized reward

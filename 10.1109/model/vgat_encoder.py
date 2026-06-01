@@ -4,176 +4,114 @@ import torch.nn.functional as F
 
 from torch_geometric.nn import GATConv
 from torch_geometric.utils import dense_to_sparse
-
+ 
 
 class VGATEncoder(nn.Module):
     """
-    Equation (23)
+    Graph encoder for task structure only.
 
-    stask = GAT(otask)
+    Input:
+        node_features: [B, N, F] or [N, F]
+        adj_matrix:    [B, N, N] or [N, N]
 
-    Inputs:
-        - node_features
-        - adjacency matrix
-        - trajectory features
+    Output:
+        graph_embedding: [B, out_dim] or [out_dim]
     """
 
     def __init__(
         self,
         node_feature_dim=6,
-        trajectory_dim=5,
         hidden_dim=64,
         out_dim=128,
-        num_heads=4
+        num_heads=4,
+        dropout=0.1,
     ):
-
         super().__init__()
 
-        self.trajectory_encoder = nn.Sequential(
+        self.node_feature_dim = node_feature_dim
+        self.hidden_dim = hidden_dim
+        self.out_dim = out_dim
+        self.dropout = dropout
 
-            nn.Linear(
-                trajectory_dim,
-                hidden_dim
-            ),
-
-            nn.ReLU(),
-
-            nn.Linear(
-                hidden_dim,
-                hidden_dim
-            )
+        self.input_proj = nn.Sequential(
+            nn.Linear(node_feature_dim, hidden_dim),
+            nn.GELU(),
+            nn.LayerNorm(hidden_dim),
         )
 
         self.gat1 = GATConv(
-            node_feature_dim + hidden_dim,
-            hidden_dim,
+            in_channels=hidden_dim,
+            out_channels=hidden_dim,
             heads=num_heads,
-            concat=True
+            concat=True,
+            dropout=dropout,
         )
 
         self.gat2 = GATConv(
-            hidden_dim * num_heads,
-            out_dim,
+            in_channels=hidden_dim * num_heads,
+            out_channels=out_dim,
             heads=1,
-            concat=False
+            concat=False,
+            dropout=dropout,
         )
 
-    def forward(
-        self,
-        node_features,
-        adj_matrix,
-        trajectory_features
-    ):
-        """
-        node_features:
-            [B, N, 6]
+        self.readout = nn.Sequential(
+            nn.Linear(out_dim, out_dim),
+            nn.GELU(),
+            nn.LayerNorm(out_dim),
+        )
 
-        adj_matrix:
-            [B, N, N]
+    def forward(self, node_features, adj_matrix):
+        single_graph = False
 
-        trajectory_features:
-            [B, T, 5]
-        """
+        if node_features.dim() == 2:
+            node_features = node_features.unsqueeze(0)
+            adj_matrix = adj_matrix.unsqueeze(0)
+            single_graph = True
 
-        batch_size = node_features.shape[0]
-
+        batch_size = node_features.size(0)
         outputs = []
 
         for b in range(batch_size):
+            x = node_features[b].float()
+            adj = adj_matrix[b].float()
 
-            x = node_features[b]
-
-            adj = adj_matrix[b]
-
-            traj = trajectory_features[b]
+            x = self.input_proj(x)
 
             edge_index, _ = dense_to_sparse(adj)
 
-            # aggregate trajectory context
-            traj_embed = self.trajectory_encoder(
-                traj
-            )
+            # Safe fallback if graph is empty for any reason
+            if edge_index.numel() == 0:
+                graph_embedding = x.mean(dim=0)
+                graph_embedding = self.readout(graph_embedding)
+                outputs.append(graph_embedding)
+                continue
 
-            traj_embed = traj_embed.mean(
-                dim=0,
-                keepdim=True
-            )
+            x = self.gat1(x, edge_index)
+            x = F.elu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
 
-            traj_embed = traj_embed.repeat(
-                x.shape[0],
-                1
-            )
-
-            x = torch.cat(
-                [
-                    x,
-                    traj_embed
-                ],
-                dim=-1
-            )
-
-            x = self.gat1(
-                x,
-                edge_index
-            )
-
+            x = self.gat2(x, edge_index)
             x = F.elu(x)
 
-            x = self.gat2(
-                x,
-                edge_index
-            )
+            graph_embedding = x.mean(dim=0)
+            graph_embedding = self.readout(graph_embedding)
 
-            x = x.mean(dim=0)
+            outputs.append(graph_embedding)
 
-            outputs.append(x)
+        out = torch.stack(outputs, dim=0)
 
-        return torch.stack(outputs)
+        if single_graph:
+            return out.squeeze(0)
 
+        return out
+    
 if __name__ == "__main__":
+    B, N, feat_dim = 2, 12, 6
+    node_features = torch.randn(B, N, feat_dim)
+    adj_matrix = torch.randint(0, 2, (B, N, N)).float()
 
-    from torch_geometric.data import Data
+    model = VGATEncoder(node_feature_dim=6, hidden_dim=64, out_dim=128, num_heads=4)
+    out = model(node_features, adj_matrix)
 
-    num_nodes = 10
-
-    input_dim = 6
-
-    x = torch.randn(
-        num_nodes,
-        input_dim
-    )
-
-    edge_index = torch.tensor([
-        [0, 0, 1, 2, 3, 4],
-        [1, 2, 3, 4, 5, 6]
-    ], dtype=torch.long)
-
-    data = Data(
-        x=x,
-        edge_index=edge_index
-    )
-
-    model = VGATEncoder(
-        input_dim=input_dim
-    )
-
-    output = model(
-        data.x,
-        data.edge_index
-    )
-
-    print("Latent Shape:")
-    print(output["z"].shape)
-
-    print("\nGraph Embedding Shape:")
-    print(output["graph_embedding"].shape)
-
-    loss_dict = model.loss_function(
-        x=data.x,
-        reconstruction=output["reconstruction"],
-        mean=output["mean"],
-        logvar=output["logvar"]
-    )
-
-    print("\nLosses:")
-    print(loss_dict)
+    print(out.shape)

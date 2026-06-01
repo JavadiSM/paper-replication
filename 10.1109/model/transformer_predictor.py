@@ -49,7 +49,10 @@ class PositionalEncoding(nn.Module):
 
         pe = pe.unsqueeze(0)
 
-        self.register_buffer("pe", pe)
+        self.register_buffer(
+            "pe",
+            pe
+        )
 
     def forward(self, x):
 
@@ -62,7 +65,7 @@ class TransformerPredictor(nn.Module):
 
     slocations = Transformer(olocations)
 
-    olocation:
+    olocations:
         (
             ul_channel,
             task_num,
@@ -71,6 +74,9 @@ class TransformerPredictor(nn.Module):
             f,
             CFT
         )
+
+    Input shape:
+        [B, num_locations, history_len, 6]
     """
 
     def __init__(
@@ -120,19 +126,37 @@ class TransformerPredictor(nn.Module):
     ):
         """
         locations:
-            [B, num_locations, 6]
+            [B, num_locations, history_len, 6]
         """
 
-        x = self.input_projection(
-            locations
+        B, L, T, F = locations.shape
+
+        # merge batch and location dimensions
+        x = locations.reshape(
+            B * L,
+            T,
+            F
         )
+
+        x = self.input_projection(x)
 
         x = self.positional_encoding(x)
 
         x = self.transformer(x)
 
+        # temporal pooling
         x = x.mean(dim=1)
 
         x = self.output_head(x)
+
+        # restore location dimension
+        x = x.reshape(
+            B,
+            L,
+            -1
+        )
+
+        # aggregate all locations
+        x = x.mean(dim=1)
 
         return x

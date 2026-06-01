@@ -490,10 +490,13 @@ class VEC(gym.Env):
             self.devices,
         )
 
-        reward = self.reward_calculator.compute_scaled_reward(
+        reward, metrics = self.reward_calculator.compute_scaled_reward(
             previous_makespan=self.previous_makespan,
             current_makespan=current_makespan,
             local_baseline=local_baseline,
+            scheduler=self.scheduler,
+            dag=self.dag,
+            devices=self.devices,
         )
 
         self.previous_makespan = current_makespan
@@ -505,8 +508,17 @@ class VEC(gym.Env):
                 self.dag,
                 self.devices,
             )
+        info = self._get_info()
 
-        return self._get_observation(), reward, terminated, truncated, self._get_info()
+        info.update(metrics)
+
+        return (
+            self._get_observation(),
+            reward,
+            terminated,
+            truncated,
+            info
+        )
 
     def render(self):
         print("\n========== DAG STATE ==========")
