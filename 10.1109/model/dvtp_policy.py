@@ -9,9 +9,12 @@ from stable_baselines3.common.torch_layers import (# type: ignore
     BaseFeaturesExtractor
 )
 
-from model.vgat_encoder import VGATEncoder
-from model.transformer_predictor import TransformerPredictor
-
+try:
+    from model.vgat_encoder import VGATEncoder
+    from model.transformer_predictor import TransformerPredictor
+except:
+    from vgat_encoder import VGATEncoder
+    from transformer_predictor import TransformerPredictor
 
 class DVTPFeatureExtractor(
     BaseFeaturesExtractor
@@ -32,6 +35,7 @@ class DVTPFeatureExtractor(
         observation_space: spaces.Dict
     ):
 
+        
         super().__init__(
             observation_space,
             features_dim=384
@@ -42,25 +46,14 @@ class DVTPFeatureExtractor(
         # VGAT over DAG only
         # ==================================================
 
-        self.vgat = VGATEncoder(
-            node_feature_dim=6,
-            hidden_dim=64,
-            out_dim=128,
-            num_heads=4
-        )
+        self.vgat = VGATEncoder()
 
         # ==================================================
         # Equation (24)
         # Transformer over location histories
         # ==================================================
 
-        self.transformer = TransformerPredictor(
-            input_dim=6,
-            d_model=64,
-            nhead=4,
-            num_layers=2,
-            output_dim=128
-        )
+        self.transformer = TransformerPredictor()
 
         # ==================================================
         # Equation (25)
@@ -69,18 +62,13 @@ class DVTPFeatureExtractor(
 
         self.node_mlp = nn.Sequential(
 
-            nn.Linear(
-                2,
-                64
-            ),
-
+            nn.Linear(2, 128),
             nn.ReLU(),
 
-            nn.Linear(
-                64,
-                128
-            ),
+            nn.Linear(128, 128),
+            nn.ReLU(),
 
+            nn.Linear(128, 128),
             nn.ReLU()
         )
 
@@ -177,6 +165,20 @@ class DVTPPPO(PPO):
                 "vf": [256, 128]
             }
         })
+        
+        kwargs.setdefault("learning_rate", 1e-4)
+
+        kwargs.setdefault("batch_size", 256)
+
+        kwargs.setdefault("gamma", 0.9999)
+
+        kwargs.setdefault("gae_lambda", 0.95)
+
+        kwargs.setdefault("vf_coef", 0.5)
+
+        kwargs.setdefault("ent_coef", 0.01)
+
+        kwargs.setdefault("clip_range", 0.2)
 
         super().__init__(
             "MultiInputPolicy",

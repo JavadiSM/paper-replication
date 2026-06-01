@@ -75,16 +75,20 @@ class TransformerPredictor(nn.Module):
             CFT
         )
 
-    Input shape:
+    Input:
         [B, num_locations, history_len, 6]
+
+    Output:
+        [B, 128]
     """
 
     def __init__(
         self,
         input_dim=6,
-        d_model=64,
-        nhead=4,
-        num_layers=2,
+        d_model=512,
+        nhead=8,
+        num_layers=6,
+        ffn_dim=512,
         output_dim=128
     ):
 
@@ -102,6 +106,9 @@ class TransformerPredictor(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
+            dim_feedforward=ffn_dim,
+            dropout=0.1,
+            activation="relu",
             batch_first=True
         )
 
@@ -111,12 +118,10 @@ class TransformerPredictor(nn.Module):
         )
 
         self.output_head = nn.Sequential(
-
             nn.Linear(
                 d_model,
                 output_dim
             ),
-
             nn.ReLU()
         )
 
@@ -131,32 +136,58 @@ class TransformerPredictor(nn.Module):
 
         B, L, T, F = locations.shape
 
-        # merge batch and location dimensions
+        # Merge batch and location dimensions
         x = locations.reshape(
             B * L,
             T,
             F
         )
 
+        # Input projection
         x = self.input_projection(x)
 
+        # Positional encoding
         x = self.positional_encoding(x)
 
+        # Transformer encoder
         x = self.transformer(x)
 
-        # temporal pooling
+        # Temporal pooling
         x = x.mean(dim=1)
 
+        # Output projection
         x = self.output_head(x)
 
-        # restore location dimension
+        # Restore location dimension
         x = x.reshape(
             B,
             L,
-            -1
+            output_dim := x.shape[-1]
         )
 
-        # aggregate all locations
+        # Aggregate all locations
         x = x.mean(dim=1)
 
         return x
+
+
+if __name__ == "__main__":
+
+    B = 2
+    num_locations = 10
+    history_len = 20
+    feature_dim = 6
+
+    locations = torch.randn(
+        B,
+        num_locations,
+        history_len,
+        feature_dim
+    )
+
+    model = TransformerPredictor()
+
+    output = model(locations)
+
+    print("Output shape:", output.shape)
+    # Expected: [2, 128]
