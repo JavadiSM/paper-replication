@@ -13,7 +13,8 @@ class DAGGenerator:
         beta: float = 1.0,
         cpu_range=(1e7, 1e8),
         data_range=(50, 500),      # KB
-        edge_data_range=(100, 500) # KB
+        edge_data_range=(100, 500), # KB
+        rng=None,
 
     ):
         self.num_tasks = num_tasks
@@ -26,6 +27,7 @@ class DAGGenerator:
         self.cpu_range = cpu_range
         self.data_range = data_range
         self.edge_data_range = edge_data_range
+        self.rng = rng if rng is not None else random.Random()
 
     def generate(self):
         """
@@ -49,8 +51,8 @@ class DAGGenerator:
 
                 g.add_node(
                     (task, node),
-                    cpu_cycles=random.uniform(*self.cpu_range),
-                    data_size=random.uniform(*self.data_range),
+                    cpu_cycles=self.rng.uniform(*self.cpu_range),
+                    data_size=self.rng.uniform(*self.data_range),
                     scheduled_location=-1,
                     available=0
                 )
@@ -70,12 +72,12 @@ class DAGGenerator:
                 if len(possible_targets) == 0:
                     continue
 
-                out_degree = random.randint(
+                out_degree = self.rng.randint(
                     0,
                     min(self.max_out_degree, len(possible_targets))
                 )
 
-                targets = random.sample(
+                targets = self.rng.sample(
                     possible_targets,
                     out_degree
                 )
@@ -85,7 +87,7 @@ class DAGGenerator:
                     g.add_edge(
                         (task, src),
                         (task, dst),
-                        data_size=random.uniform(*self.edge_data_range)
+                        data_size=self.rng.uniform(*self.edge_data_range)
                     )
 
         # --------------------------------------------------
