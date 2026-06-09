@@ -1,5 +1,9 @@
 import heapq
 from collections import deque
+import networkx as nx
+
+import numpy as np
+from copy import deepcopy
 
  
 class Processor:
@@ -261,7 +265,7 @@ class Scheduler:
         result = device.schedule_task(
             cpu_cycles=cpu_cycles,
             ready_time=predecessor_ready
-        )
+        ) 
         """
                 {
                     "processor_id": processor.processor_id,
@@ -344,6 +348,182 @@ class Scheduler:
 
 
 
+
+    def estimate_mean_cft(self):
+
+        ct_cache = {}
+
+        # ---------------------------------------
+        # simulate processor availability
+        # ---------------------------------------
+        proc_available = {
+            dev_id: [
+                p.available_time for p in dev.processors
+            ]
+            for dev_id, dev in self.devices.items()
+        }
+
+        # ---------------------------------------
+        # load already scheduled nodes
+        # ---------------------------------------
+        for node, info in self.node_schedule_info.items():
+            ct_cache[node] = info["CT"]
+
+            # reserve processor state (IMPORTANT)
+            dev_id = info["device_id"]
+            proc_idx = info["processor_id"]
+
+            # sync simulated processor timeline
+            proc_available[dev_id][proc_idx] = info["CT"]
+
+        topo_order = list(nx.topological_sort(self.dag))
+
+        # ---------------------------------------
+        # simulate unscheduled nodes
+        # ---------------------------------------
+        for node in topo_order:
+
+            if node == 0:
+                continue
+
+            if node in ct_cache:
+                continue
+
+            if not isinstance(node, tuple):
+                continue
+
+            device_id = node[0]
+            device = self.devices[device_id]
+
+            # -------------------------
+            # compute ready_time
+            # -------------------------
+            ready_time = 0.0
+
+            for pred in self.dag.predecessors(node):
+
+                if pred == 0:
+                    pred_ct = 0.0
+                    pred_device = self.devices[node[0]]
+                    edge_data = self.dag.nodes[node].get("data_size", 0.0)
+
+                else:
+                    pred_ct = ct_cache[pred]
+
+                    if pred in self.node_schedule_info:
+                        pred_device = self.devices[
+                            self.node_schedule_info[pred]["device_id"]
+                        ]
+                    else:
+                        pred_device = self.devices[pred[0]]
+
+                    edge_data = self.dag.edges[pred, node].get("data_size", 0.0)
+
+                same_location = (pred_device.node_id == device.node_id)
+
+                distance = self.transmission_model.euclidean_distance(
+                    pred_device.x,
+                    pred_device.y,
+                    device.x,
+                    device.y
+                )
+
+                tx_time = self.transmission_model.transmission_time(
+                    data_size_kb=edge_data,
+                    distance_m=distance,
+                    same_location=same_location
+                )
+
+                ready_time = max(ready_time, pred_ct + tx_time)
+
+            exec_time = self.dag.nodes[node]["cpu_cycles"] / device.compute_power
+
+            # ---------------------------------------
+            # REAL scheduling (FIFO like Scheduler)
+            # ---------------------------------------
+            proc_list = proc_available[device_id]
+
+            proc_idx = int(np.argmin(proc_list))
+
+            est = max(ready_time, proc_list[proc_idx])
+            ct = est + exec_time
+
+            proc_list[proc_idx] = ct
+
+            ct_cache[node] = ct
+
+        # ---------------------------------------
+        # end nodes CFT
+        # ---------------------------------------
+        tuple_nodes = [n for n in self.dag.nodes if isinstance(n, tuple)]
+
+        end_id = max(n[1] for n in tuple_nodes)
+
+        end_nodes = [n for n in tuple_nodes if n[1] == end_id]
+
+        cfts = [ct_cache[n] for n in end_nodes]
+
+        return float(np.mean(cfts))
+
+    def estimate_local_mean_cft(self):
+
+        ct_cache = {}
+
+        topo_order = list(nx.topological_sort(self.dag))
+
+        for node in topo_order:
+
+            if node == 0:
+                continue
+
+            if not isinstance(node, tuple):
+                continue
+
+            device = self.devices[node[0]]
+
+            predecessors = list(self.dag.predecessors(node))
+
+            ready_time = 0.0
+
+            for pred in predecessors:
+
+                if pred == 0:
+                    pred_ct = 0.0
+                    pred_device = self.devices[node[0]]
+                    edge_data = self.dag.nodes[node].get("data_size", 0.0)
+
+                else:
+                    pred_ct = ct_cache[pred]
+                    pred_device = self.devices[pred[0]]
+                    edge_data = self.dag.edges[pred, node].get("data_size", 0.0)
+
+                tx_time = self.transmission_model.transmission_time(
+                    data_size_kb=edge_data,
+                    distance_m=0.0,
+                    same_location=True
+                )
+
+                ready_time = max(
+                    ready_time,
+                    pred_ct + tx_time
+                )
+
+            exec_time = (
+                self.dag.nodes[node]["cpu_cycles"]
+                / device.compute_power
+            )
+
+            ct_cache[node] = ready_time + exec_time
+
+        tuple_nodes = [n for n in self.dag.nodes if isinstance(n, tuple)]
+
+        end_id = max(n[1] for n in tuple_nodes)
+
+        end_nodes = [n for n in tuple_nodes if n[1] == end_id]
+
+        cfts = [ct_cache[n] for n in end_nodes]
+
+        return sum(cfts) / len(cfts)
 import matplotlib.pyplot as plt
 def visualize_env(devices):
     type_styles = {

@@ -68,19 +68,19 @@ class VEC(gym.Env):
     """
     main body of paper
     """
-    def __init__(self, num_ve:int = 5, num_ves:int = 1, num_nodes:int = 5,history_len:int =8):
+    def __init__(self, num_ve:int = 5, num_ves:int = 1, num_nodes:int = 5,history_len:int =4):
         
         super(VEC, self).__init__()
         self.num_ve = num_ve
         self.num_ves = num_ves
         self.num_nodes = num_nodes
-        self.world_size = 1000
+        self.world_size = 10
         self.num_locations = None
         self._num_task_graph_nodes = num_ve * (num_nodes + 1) + 1
         self.dag_generator = DAGGenerator(
             num_tasks=num_ve,
             num_nodes=num_nodes,
-            max_out_degree=min(5,num_nodes),
+            max_out_degree=min(6, num_nodes),
         )
 
         self.reward_calculator = RewardCalculator()
@@ -197,8 +197,8 @@ class VEC(gym.Env):
                 node_id=device_id,
                 compute_power=10e9,
                 num_processors=4,
-                x=float(np.random.uniform(0, self.world_size)),
-                y=float(np.random.uniform(0, self.world_size)),
+                x=float(np.random.uniform(self.world_size//4, 3 * self.world_size//4)),
+                y=float(np.random.uniform(self.world_size//4, 3 * self.world_size//4)),
                 node_type="VES",
             )
 
@@ -208,6 +208,7 @@ class VEC(gym.Env):
         super().reset(seed=seed)
 
         self._build_devices()
+        self.reward_calculator.reset()
         self.dag = self.dag_generator.generate()
         self.dag.nodes[0]["available"] = 0
         self.dag.nodes[0]["scheduled_location"] = 0
@@ -253,7 +254,6 @@ class VEC(gym.Env):
             for _ in range(self.history_len):
 
                 self.location_buffers[device_id].append(state)
-
 
 
 
@@ -326,11 +326,16 @@ class VEC(gym.Env):
         attr = self.dag.nodes[node]
         return attr["available"] == 1 and attr["scheduled_location"] == -1
 
-# still not sure
     def _get_info(self):
+
         return {
             "valid_nodes": self._get_valid_nodes(),
-            "makespan": self.reward_calculator.calculate_makespan(self.scheduler),
+            "mean_cft": self.reward_calculator.prev_cft
+            if hasattr(self.reward_calculator, "prev_cft")
+            else None,
+            "baseline_cft": self.reward_calculator.local_baseline
+            if hasattr(self.reward_calculator, "local_baseline")
+            else None,
         }
 
     def _update_vehicle_positions(self):
@@ -451,13 +456,8 @@ class VEC(gym.Env):
         node_signal = float(action[0])
         location_signal = float(action[1])
 
-        node_id = self._map_continuous_to_node(
-            node_signal
-        )
-
-        location_id = self._map_continuous_to_location(
-            location_signal
-        )
+        node_id = self._map_continuous_to_node(node_signal)
+        location_id = self._map_continuous_to_location(location_signal)
 
         valid_nodes = self._get_valid_nodes()
         if len(valid_nodes) == 0:
@@ -470,36 +470,59 @@ class VEC(gym.Env):
             )
 
         if node_id not in self.dag.nodes:
-            return self._get_observation(), invalid_reward, False, truncated, {"invalid_reason": "unknown_node"}
+            return (
+                self._get_observation(),
+                invalid_reward,
+                False,
+                truncated,
+                {"invalid_reason": "unknown_node"},
+            )
 
         if location_id not in self.devices:
-            return self._get_observation(), invalid_reward, False, truncated, {"invalid_reason": "unknown_location"}
+            return (
+                self._get_observation(),
+                invalid_reward,
+                False,
+                truncated,
+                {"invalid_reason": "unknown_location"},
+            )
 
         if not self._is_schedulable(node_id):
-            return self._get_observation(), invalid_reward, False, truncated, {"invalid_reason": "node_not_schedulable"}
+            return (
+                self._get_observation(),
+                invalid_reward,
+                False,
+                truncated,
+                {"invalid_reason": "node_not_schedulable"},
+            )
+
+        # --------------------------
+        # environment dynamics
+        # --------------------------
 
         self._update_vehicle_positions()
 
-        self.scheduler.schedule_node(node_id=node_id, device_id=location_id)
-        self.scheduler.update_available_nodes()
-        self._update_location_buffers()
-        current_makespan = self.reward_calculator.calculate_makespan(self.scheduler)
-
-        local_baseline = self.reward_calculator.estimate_local_completion(
-            self.dag,
-            self.devices,
+        self.scheduler.schedule_node(
+            node_id=node_id,
+            device_id=location_id
         )
 
+        self.scheduler.update_available_nodes()
+        self._update_location_buffers()
+
+        # --------------------------
+        # reward (CFT-based)
+        # --------------------------
+
         reward, metrics = self.reward_calculator.compute_scaled_reward(
-            previous_makespan=self.previous_makespan,
-            current_makespan=current_makespan,
-            local_baseline=local_baseline,
             scheduler=self.scheduler,
             dag=self.dag,
             devices=self.devices,
         )
 
-        self.previous_makespan = current_makespan
+        # --------------------------
+        # termination
+        # --------------------------
 
         if self.scheduler.is_all_scheduled():
             terminated = True
@@ -508,8 +531,8 @@ class VEC(gym.Env):
                 self.dag,
                 self.devices,
             )
-        info = self._get_info()
 
+        info = self._get_info()
         info.update(metrics)
 
         return (
@@ -538,128 +561,3 @@ class VEC(gym.Env):
                 f"EST={info['EST']:.4f} | "
                 f"CT={info['CT']:.4f}"
             )
-
-
-
-
-
-
-"""
-
-
-
-
-
-
-
-
-
-
-
-
-    def get_valid_actions(self):
-        return np.flatnonzero(self.action_masks())
-
-
-    def _decode_action_node(self, flat_index)->tuple | int:
-        if flat_index == 0:
-            return 0
-
-        task_id = (flat_index - 1) // (self.num_nodes + 1)
-        node_id = (flat_index - 1) % (self.num_nodes + 1) + 1
-        return (task_id, node_id)
-
-    def _encode_node(self, node) -> int:
-        if node == 0:
-            return 0
-
-        task_id, node_id = node
-        return 1 + task_id * (self.num_nodes + 1) + (node_id - 1)
-
-    def action_masks(self):
-        mask = np.zeros(self.total_actions, dtype=bool)
-
-        for node in self.dag.nodes:
-            if not self._is_schedulable(node):
-                continue
-
-            node_idx = self._encode_node(node)
-
-            start = node_idx * self.num_locations # type: ignore
-            end = start + self.num_locations # type: ignore
-
-            mask[start:end] = True
-
-        return mask
-
-
-
-
-
-        
-
-
-
-if __name__ == "__main__":
-    env = VEC(
-        num_ve=3,
-        num_ves=1,
-        num_nodes=4,
-        history_len=4,
-    )
-
-    obs, info = env.reset()
-
-    print("=== ENV RESET ===")
-
-    print("\nTrajectory shape:")
-    print(obs["trajectory"].shape)
-
-    print("\nInitial trajectory matrix:")
-    print(obs["trajectory"])
-
-    done = False
-    step_count = 0
-    max_steps = 10
-
-    while not done and step_count < max_steps:
-
-        valid_actions = env.get_valid_actions()
-
-        if len(valid_actions) == 0:
-            print("No valid actions left.")
-            break
-
-        action = np.random.uniform(
-            low=-1.0,
-            high=1.0,
-            size=(env.total_actions,),
-        ).astype(np.float32)
-
-        chosen_action = random.choice(valid_actions)
-        action[chosen_action] = 999.0
-
-        obs, reward, terminated, truncated, info = env.step(action)
-
-        print(f"\n========== STEP {step_count} ==========")
-
-        print("Reward:", reward)
-        print("Makespan:", info.get("makespan"))
-
-        print("\nTrajectory matrix:")
-        print(obs["trajectory"])
-
-        print("\nTrajectory shape:")
-        print(obs["trajectory"].shape)
-
-        done = terminated or truncated
-        step_count += 1
-
-    print("\n=== FINISHED ===")
-"""
-
-
-
-
-
-

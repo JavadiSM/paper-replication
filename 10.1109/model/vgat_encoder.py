@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from torch_geometric.nn import GATConv
 from torch_geometric.utils import dense_to_sparse
-
+ 
 
 class VGATBlock(nn.Module):
 

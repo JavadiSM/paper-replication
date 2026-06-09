@@ -10,8 +10,6 @@ BOLTZMANN = 1.380649e-23
 
 class TransmissionModel:
     """
-    Implements equations (1) - (9) from the paper.
-
     Includes:
     - FSPL
     - SNR
@@ -36,10 +34,6 @@ class TransmissionModel:
         self.temperature = temperature
         self.alpha = alpha
 
-    # ==================================================
-    # equation (1)
-    # ==================================================
-
     def fspl(self, distance_m):
 
         distance_m = max(distance_m, 1.0)
@@ -51,10 +45,6 @@ class TransmissionModel:
             + 20 * math.log10(frequency_mhz)
             + self.alpha
         )
-
-    # ==================================================
-    # equation (2)
-    # ==================================================
 
     def snr(self, distance_m):
 
@@ -80,10 +70,6 @@ class TransmissionModel:
             - thermal_noise_dbm
         )
 
-    # ==================================================
-    # equation (3)
-    # ==================================================
-
     def transmission_rate(
         self,
         distance_m
@@ -102,10 +88,6 @@ class TransmissionModel:
         )
 
         return max(rate, 1e-6)
-
-    # ==================================================
-    # equation (4)
-    # ==================================================
 
     def transmission_time(
         self,
@@ -127,10 +109,6 @@ class TransmissionModel:
 
         return data_size_bits / rate
 
-    # ==================================================
-    # equation (5)
-    # ==================================================
-
     def upload_time(
         self,
         task_data_kb,
@@ -142,10 +120,6 @@ class TransmissionModel:
             distance_m=distance_m,
             same_location=False
         )
-
-    # ==================================================
-    # equation (8)
-    # ==================================================
 
     def download_time(
         self,
@@ -162,11 +136,6 @@ class TransmissionModel:
             distance_m=distance_m,
             same_location=False
         )
-
-    # ==================================================
-    # equation (9)
-    # ==================================================
-
     @staticmethod
     def euclidean_distance(
         x1,
