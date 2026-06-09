@@ -1,108 +1,63 @@
-import heapq
 from collections import deque
+
 import networkx as nx
-
 import numpy as np
-from copy import deepcopy
 
- 
+
 class Processor:
     """
     Single processor inside VE or VES.
     """
+
     def __init__(self, processor_id):
         self.processor_id = processor_id
         self.available_time = 0.0
         self.queue = deque()
 
-    def schedule(
-        self,
-        execution_time,
-        ready_time
-    ):
+    def schedule(self, execution_time, ready_time):
         """
         Returns:
         - EST
         - CT
         """
 
-        est = max(
-            self.available_time,
-            ready_time
-        )
+        est = max(self.available_time, ready_time)
         ct = est + execution_time
         self.available_time = ct
-        self.queue.append(
-            (est, ct)
-        )
+        self.queue.append((est, ct))
         return est, ct
 
 
 class ComputeNode:
     """
-    VE or VES
+    VE or VES.
     """
 
-    def __init__(
-        self,
-        node_id,
-        compute_power,
-        num_processors,
-        x,
-        y,
-        node_type="VE"
-    ):
-
+    def __init__(self, node_id, compute_power, num_processors, x, y, node_type="VE"):
         self.node_id = node_id
-
         self.compute_power = compute_power
-
         self.num_processors = num_processors
-
         self.node_type = node_type
-
         self.x = x
         self.y = y
-
-        self.processors = [
-            Processor(i)
-            for i in range(num_processors)
-        ]
+        self.processors = [Processor(i) for i in range(num_processors)]
 
     def get_lightest_processor(self):
+        return min(self.processors, key=lambda p: p.available_time)
 
-        return min(
-            self.processors,
-            key=lambda p: p.available_time
-        )
-
-    def execution_time(
-        self,
-        cpu_cycles
-    ):
-
+    def execution_time(self, cpu_cycles):
         return cpu_cycles / self.compute_power
 
-    def schedule_task(
-        self,
-        cpu_cycles,
-        ready_time
-    ):
-
+    def schedule_task(self, cpu_cycles, ready_time):
         processor = self.get_lightest_processor()
-
         exec_time = self.execution_time(cpu_cycles)
-
-        est, ct = processor.schedule(
-            execution_time=exec_time,
-            ready_time=ready_time
-        )
+        est, ct = processor.schedule(execution_time=exec_time, ready_time=ready_time)
 
         return {
             "processor_id": processor.processor_id,
             "EST": est,
             "CT": ct,
-            "execution_time": exec_time
+            "execution_time": exec_time,
         }
 
 
@@ -116,416 +71,231 @@ class Scheduler:
     - predecessor dependency logic
     """
 
-    def __init__(self, dag, transmission_model,devices):
-
+    def __init__(self, dag, transmission_model, devices):
         self.dag = dag
-
         self.transmission_model = transmission_model
-
         self.devices = devices
-
         self.node_finish_times = {}
-
         self.node_schedule_info = {}
 
-    # ==================================================
-    # predecessor communication delay
-    # ==================================================
-    # ==================================================
-    # predecessor communication delay
-    # ==================================================
+    def _edge_transfer_time(self, pred, node_id, pred_device, target_device):
+        if pred == 0:
+            edge_data = self.dag.nodes[node_id].get("data_size", 0.0)
+        else:
+            edge_data = self.dag.edges[pred, node_id].get("data_size", 0.0)
 
-    def predecessor_ready_time(self,node_id,target_device_id):
-
-        predecessors = list(
-            self.dag.predecessors(node_id)
+        same_location = pred_device.node_id == target_device.node_id
+        distance = self.transmission_model.euclidean_distance(
+            pred_device.x,
+            pred_device.y,
+            target_device.x,
+            target_device.y,
         )
+
+        return self.transmission_model.transmission_time(
+            data_size_kb=edge_data,
+            distance_m=distance,
+            same_location=same_location,
+        )
+
+    # ==================================================
+    # predecessor communication delay
+    # ==================================================
+    def predecessor_ready_time(self, node_id, target_device_id):
+        predecessors = list(self.dag.predecessors(node_id))
 
         if len(predecessors) == 0:
             return 0.0
 
         ready_times = []
-
-        target_device = self.devices[
-            target_device_id
-        ]
+        target_device = self.devices[target_device_id]
 
         for pred in predecessors:
-
-            # =============================================
-            # global start node
-            #
-            # semantics:
-            # data originates from producer vehicle
-            # =============================================
-
             if pred == 0:
-
                 producer_vehicle_id = node_id[0]
-
-                pred_device = self.devices[
-                    producer_vehicle_id
-                ]
-
+                pred_device = self.devices[producer_vehicle_id]
                 pred_ct = 0.0
-
-                edge_data = self.dag.nodes[
-                    node_id
-                ].get(
-                    "data_size",
-                    0.0
-                )
-
-            # =============================================
-            # normal predecessor
-            # =============================================
-
             else:
-
-                pred_info = self.node_schedule_info.get(
-                    pred
-                )
-
-                # predecessor not finished yet
+                pred_info = self.node_schedule_info.get(pred)
                 if pred_info is None:
-                    continue
-
-                pred_device = self.devices[
-                    pred_info["device_id"]
-                ]
-
+                    raise ValueError(
+                        f"Cannot schedule {node_id}: predecessor {pred} has not been scheduled."
+                    )
+                pred_device = self.devices[pred_info["device_id"]]
                 pred_ct = pred_info["CT"]
 
-                edge_data = self.dag.edges[
-                    pred,
-                    node_id
-                ].get(
-                    "data_size",
-                    0.0
-                )
-
-            # =============================================
-            # transmission
-            # =============================================
-
-            same_location = (
-
-                    pred_device.node_id
-                    ==
-                    target_device.node_id
+            tx_time = self._edge_transfer_time(
+                pred=pred,
+                node_id=node_id,
+                pred_device=pred_device,
+                target_device=target_device,
             )
+            ready_times.append(pred_ct + tx_time)
 
-            distance = self.transmission_model.euclidean_distance(
+        return max(ready_times) if ready_times else 0.0
 
-                pred_device.x,
-                pred_device.y,
-
-                target_device.x,
-                target_device.y
-            )
-
-            tx_time = self.transmission_model.transmission_time(
-
-                data_size_kb=edge_data,
-
-                distance_m=distance,
-
-                same_location=same_location
-            )
-
-            ready_times.append(
-                pred_ct + tx_time
-            )
-
-        if len(ready_times) == 0:
-            return 0.0
-
-        return max(ready_times)
     # ==================================================
     # equation (10) + (11)
     # ==================================================
-
-    def schedule_node(
-        self,
-        node_id,
-        device_id
-    ):
-
+    def schedule_node(self, node_id, device_id):
         node_attr = self.dag.nodes[node_id]
-
         cpu_cycles = node_attr["cpu_cycles"]
-
         device = self.devices[device_id]
 
         predecessor_ready = self.predecessor_ready_time(
             node_id=node_id,
-            target_device_id=device_id
+            target_device_id=device_id,
         )
 
         result = device.schedule_task(
             cpu_cycles=cpu_cycles,
-            ready_time=predecessor_ready
-        ) 
-        """
-                {
-                    "processor_id": processor.processor_id,
-                    "EST": est,
-                    "CT": ct,
-                    "execution_time": exec_time
-                }
-        """
-        self.node_finish_times[node_id] = result["CT"]
+            ready_time=predecessor_ready,
+        )
 
+        self.node_finish_times[node_id] = result["CT"]
         self.node_schedule_info[node_id] = {
             "device_id": device_id,
             "EST": result["EST"],
             "CT": result["CT"],
-            "processor_id": result["processor_id"]
+            "processor_id": result["processor_id"],
         }
-
-        self.dag.nodes[node_id][
-            "scheduled_location"
-        ] = device_id
+        self.dag.nodes[node_id]["scheduled_location"] = device_id
 
         return result
 
     # ==================================================
     # node availability
     # ==================================================
-
     def update_available_nodes(self):
-
         for node in self.dag.nodes:
-
             if node == 0:
                 continue
 
-            if self.dag.nodes[node][
-                "scheduled_location"
-            ] != -1:
+            if self.dag.nodes[node]["scheduled_location"] != -1:
+                self.dag.nodes[node]["available"] = 0
                 continue
 
-            predecessors = list(
-                self.dag.predecessors(node)
-            )
-
+            predecessors = list(self.dag.predecessors(node))
             ready = True
 
             for pred in predecessors:
-
-                # Start node is always ready
                 if pred == 0:
                     continue
 
-                if self.dag.nodes[pred][
-                    "scheduled_location"
-                ] == -1:
+                if self.dag.nodes[pred]["scheduled_location"] == -1:
                     ready = False
                     break
 
-            self.dag.nodes[node][
-                "available"
-            ] = int(ready)
+            self.dag.nodes[node]["available"] = int(ready)
 
     # ==================================================
     # completion check
     # ==================================================
-
     def is_all_scheduled(self):
-
         for node in self.dag.nodes:
-
             if node in [0]:
                 continue
 
-            if self.dag.nodes[node][
-                "scheduled_location"
-            ] == -1:
-
+            if self.dag.nodes[node]["scheduled_location"] == -1:
                 return False
 
         return True
 
-
-
-
-    def estimate_mean_cft(self):
-
-        ct_cache = {}
-
-        # ---------------------------------------
-        # simulate processor availability
-        # ---------------------------------------
-        proc_available = {
-            dev_id: [
-                p.available_time for p in dev.processors
-            ]
+    def _empty_processor_times(self):
+        return {
+            dev_id: [0.0 for _ in dev.processors]
             for dev_id, dev in self.devices.items()
         }
 
-        # ---------------------------------------
-        # load already scheduled nodes
-        # ---------------------------------------
+    def _reserve_scheduled_nodes(self, proc_available, ct_cache):
         for node, info in self.node_schedule_info.items():
             ct_cache[node] = info["CT"]
-
-            # reserve processor state (IMPORTANT)
             dev_id = info["device_id"]
             proc_idx = info["processor_id"]
+            proc_available[dev_id][proc_idx] = max(
+                proc_available[dev_id][proc_idx],
+                info["CT"],
+            )
 
-            # sync simulated processor timeline
-            proc_available[dev_id][proc_idx] = info["CT"]
+    def _simulate_node(self, node, device_id, proc_available, ct_cache):
+        device = self.devices[device_id]
+        ready_time = 0.0
 
-        topo_order = list(nx.topological_sort(self.dag))
+        for pred in self.dag.predecessors(node):
+            if pred == 0:
+                pred_ct = 0.0
+                pred_device = self.devices[node[0]]
+            else:
+                pred_ct = ct_cache[pred]
 
-        # ---------------------------------------
-        # simulate unscheduled nodes
-        # ---------------------------------------
-        for node in topo_order:
-
-            if node == 0:
-                continue
-
-            if node in ct_cache:
-                continue
-
-            if not isinstance(node, tuple):
-                continue
-
-            device_id = node[0]
-            device = self.devices[device_id]
-
-            # -------------------------
-            # compute ready_time
-            # -------------------------
-            ready_time = 0.0
-
-            for pred in self.dag.predecessors(node):
-
-                if pred == 0:
-                    pred_ct = 0.0
-                    pred_device = self.devices[node[0]]
-                    edge_data = self.dag.nodes[node].get("data_size", 0.0)
-
+                if pred in self.node_schedule_info:
+                    pred_device = self.devices[self.node_schedule_info[pred]["device_id"]]
                 else:
-                    pred_ct = ct_cache[pred]
+                    pred_device = self.devices[pred[0]]
 
-                    if pred in self.node_schedule_info:
-                        pred_device = self.devices[
-                            self.node_schedule_info[pred]["device_id"]
-                        ]
-                    else:
-                        pred_device = self.devices[pred[0]]
+            tx_time = self._edge_transfer_time(
+                pred=pred,
+                node_id=node,
+                pred_device=pred_device,
+                target_device=device,
+            )
+            ready_time = max(ready_time, pred_ct + tx_time)
 
-                    edge_data = self.dag.edges[pred, node].get("data_size", 0.0)
+        exec_time = self.dag.nodes[node]["cpu_cycles"] / device.compute_power
+        proc_list = proc_available[device_id]
+        proc_idx = int(np.argmin(proc_list))
+        est = max(ready_time, proc_list[proc_idx])
+        ct = est + exec_time
+        proc_list[proc_idx] = ct
+        ct_cache[node] = ct
 
-                same_location = (pred_device.node_id == device.node_id)
-
-                distance = self.transmission_model.euclidean_distance(
-                    pred_device.x,
-                    pred_device.y,
-                    device.x,
-                    device.y
-                )
-
-                tx_time = self.transmission_model.transmission_time(
-                    data_size_kb=edge_data,
-                    distance_m=distance,
-                    same_location=same_location
-                )
-
-                ready_time = max(ready_time, pred_ct + tx_time)
-
-            exec_time = self.dag.nodes[node]["cpu_cycles"] / device.compute_power
-
-            # ---------------------------------------
-            # REAL scheduling (FIFO like Scheduler)
-            # ---------------------------------------
-            proc_list = proc_available[device_id]
-
-            proc_idx = int(np.argmin(proc_list))
-
-            est = max(ready_time, proc_list[proc_idx])
-            ct = est + exec_time
-
-            proc_list[proc_idx] = ct
-
-            ct_cache[node] = ct
-
-        # ---------------------------------------
-        # end nodes CFT
-        # ---------------------------------------
+    def _end_nodes(self):
         tuple_nodes = [n for n in self.dag.nodes if isinstance(n, tuple)]
-
         end_id = max(n[1] for n in tuple_nodes)
+        return [n for n in tuple_nodes if n[1] == end_id]
 
-        end_nodes = [n for n in tuple_nodes if n[1] == end_id]
+    def estimate_mean_cft(self):
+        ct_cache = {}
+        proc_available = self._empty_processor_times()
+        self._reserve_scheduled_nodes(proc_available, ct_cache)
 
-        cfts = [ct_cache[n] for n in end_nodes]
+        for node in nx.topological_sort(self.dag):
+            if node == 0 or node in ct_cache or not isinstance(node, tuple):
+                continue
 
+            # Future unscheduled nodes are completed by the local producer VE.
+            self._simulate_node(
+                node=node,
+                device_id=node[0],
+                proc_available=proc_available,
+                ct_cache=ct_cache,
+            )
+
+        cfts = [ct_cache[n] for n in self._end_nodes()]
         return float(np.mean(cfts))
 
     def estimate_local_mean_cft(self):
-
         ct_cache = {}
+        proc_available = self._empty_processor_times()
 
-        topo_order = list(nx.topological_sort(self.dag))
-
-        for node in topo_order:
-
-            if node == 0:
+        for node in nx.topological_sort(self.dag):
+            if node == 0 or not isinstance(node, tuple):
                 continue
 
-            if not isinstance(node, tuple):
-                continue
-
-            device = self.devices[node[0]]
-
-            predecessors = list(self.dag.predecessors(node))
-
-            ready_time = 0.0
-
-            for pred in predecessors:
-
-                if pred == 0:
-                    pred_ct = 0.0
-                    pred_device = self.devices[node[0]]
-                    edge_data = self.dag.nodes[node].get("data_size", 0.0)
-
-                else:
-                    pred_ct = ct_cache[pred]
-                    pred_device = self.devices[pred[0]]
-                    edge_data = self.dag.edges[pred, node].get("data_size", 0.0)
-
-                tx_time = self.transmission_model.transmission_time(
-                    data_size_kb=edge_data,
-                    distance_m=0.0,
-                    same_location=True
-                )
-
-                ready_time = max(
-                    ready_time,
-                    pred_ct + tx_time
-                )
-
-            exec_time = (
-                self.dag.nodes[node]["cpu_cycles"]
-                / device.compute_power
+            self._simulate_node(
+                node=node,
+                device_id=node[0],
+                proc_available=proc_available,
+                ct_cache=ct_cache,
             )
 
-            ct_cache[node] = ready_time + exec_time
+        cfts = [ct_cache[n] for n in self._end_nodes()]
+        return float(np.mean(cfts))
 
-        tuple_nodes = [n for n in self.dag.nodes if isinstance(n, tuple)]
 
-        end_id = max(n[1] for n in tuple_nodes)
-
-        end_nodes = [n for n in tuple_nodes if n[1] == end_id]
-
-        cfts = [ct_cache[n] for n in end_nodes]
-
-        return sum(cfts) / len(cfts)
-import matplotlib.pyplot as plt
 def visualize_env(devices):
+    import matplotlib.pyplot as plt
+
     type_styles = {
         "VE": {"color": "blue", "marker": "o"},
         "VES": {"color": "red", "marker": "s"},
@@ -542,7 +312,9 @@ def visualize_env(devices):
             color=style["color"],
             marker=style["marker"],
             s=200,
-            label=node.node_type if node.node_type not in plt.gca().get_legend_handles_labels()[1] else ""
+            label=node.node_type
+            if node.node_type not in plt.gca().get_legend_handles_labels()[1]
+            else "",
         )
 
         label = (
@@ -562,17 +334,11 @@ def visualize_env(devices):
     plt.show()
 
 
-
 if __name__ == "__main__":
-
     from dag_generator import DAGGenerator
     from transmission import TransmissionModel
 
-    dag = DAGGenerator(
-        num_tasks=2,
-        num_nodes=10,
-        max_out_degree=3
-    ).generate()
+    dag = DAGGenerator(num_tasks=2, num_nodes=10, max_out_degree=3).generate()
 
     transmission_model = TransmissionModel()
 
@@ -583,7 +349,7 @@ if __name__ == "__main__":
             num_processors=1,
             x=0,
             y=0,
-            node_type="VE"
+            node_type="VE",
         ),
         1: ComputeNode(
             node_id=1,
@@ -591,7 +357,7 @@ if __name__ == "__main__":
             num_processors=1,
             x=80,
             y=80,
-            node_type="VE"
+            node_type="VE",
         ),
         2: ComputeNode(
             node_id=2,
@@ -599,48 +365,31 @@ if __name__ == "__main__":
             num_processors=4,
             x=50,
             y=50,
-            node_type="VES"
-        )
+            node_type="VES",
+        ),
     }
     visualize_env(devices)
-    scheduler = Scheduler(
-        dag=dag,
-        transmission_model=transmission_model,
-        devices=devices
-    )
-    available_nodes = [
-        n for n in dag.nodes
-        if dag.nodes[n]["available"] == 1
-    ]
+    scheduler = Scheduler(dag=dag, transmission_model=transmission_model, devices=devices)
+    available_nodes = [n for n in dag.nodes if dag.nodes[n]["available"] == 1]
 
     print("Available Nodes:", available_nodes)
 
     scheduler.update_available_nodes()
 
-    available_nodes = [
-        n for n in dag.nodes
-        if dag.nodes[n]["available"] == 1
-    ]
+    available_nodes = [n for n in dag.nodes if dag.nodes[n]["available"] == 1]
 
     print("Available Nodes:", available_nodes)
 
     for node in available_nodes:
-
         if node == 0:
             continue
 
-        result = scheduler.schedule_node(
-            node_id=node,
-            device_id=1
-        )
+        result = scheduler.schedule_node(node_id=node, device_id=1)
 
         print(f"\nNode {node}")
         print(result)
 
     scheduler.update_available_nodes()
-    available_nodes = [
-        n for n in dag.nodes
-        if dag.nodes[n]["available"] == 1
-    ]
+    available_nodes = [n for n in dag.nodes if dag.nodes[n]["available"] == 1]
 
     print("Available Nodes:", available_nodes)

@@ -1,19 +1,14 @@
-try:
-    from env.dag_generator import DAGGenerator
-    from env.reward import RewardCalculator
-    from env.scheduler import ComputeNode, Scheduler
-    from env.transmission import TransmissionModel
-except ImportError:
-    from dag_generator import DAGGenerator
-    from reward import RewardCalculator
-    from scheduler import ComputeNode, Scheduler
-    from transmission import TransmissionModel
 from collections import deque
 import random
-import numpy as np
+
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
+
+from env.dag_generator import DAGGenerator
+from env.reward import RewardCalculator
+from env.scheduler import ComputeNode, Scheduler
+from env.transmission import TransmissionModel
 
 # --------------
 # help functions
@@ -77,10 +72,12 @@ class VEC(gym.Env):
         self.world_size = 10
         self.num_locations = None
         self._num_task_graph_nodes = num_ve * (num_nodes + 1) + 1
+        self._python_rng = random.Random()
         self.dag_generator = DAGGenerator(
             num_tasks=num_ve,
             num_nodes=num_nodes,
             max_out_degree=min(6, num_nodes),
+            rng=self._python_rng,
         )
 
         self.reward_calculator = RewardCalculator()
@@ -91,7 +88,6 @@ class VEC(gym.Env):
         self.devices = {}
         self.dag = self.dag_generator.generate()
         self._build_devices()
-        self.mobility_models = {}
         assert self.num_locations is not None
         self.scheduler = Scheduler(
             dag=self.dag,
@@ -173,8 +169,8 @@ class VEC(gym.Env):
         self.mobility_models = {}
 
         for vehicle_id in range(self.num_ve):
-            x = np.random.uniform(0, self.world_size)
-            y = np.random.uniform(0, self.world_size)
+            x = self.np_random.uniform(0, self.world_size)
+            y = self.np_random.uniform(0, self.world_size)
 
             self.devices[vehicle_id] = ComputeNode(
                 node_id=vehicle_id,
@@ -188,7 +184,7 @@ class VEC(gym.Env):
                 x=float(x),
                 y=float(y),
                 world_size=self.world_size,
-                rng=np.random,
+                rng=self.np_random,
             )
 
         for ves_id in range(self.num_ves):
@@ -197,8 +193,8 @@ class VEC(gym.Env):
                 node_id=device_id,
                 compute_power=10e9,
                 num_processors=4,
-                x=float(np.random.uniform(self.world_size//4, 3 * self.world_size//4)),
-                y=float(np.random.uniform(self.world_size//4, 3 * self.world_size//4)),
+                x=float(self.np_random.uniform(self.world_size / 4, 3 * self.world_size / 4)),
+                y=float(self.np_random.uniform(self.world_size / 4, 3 * self.world_size / 4)),
                 node_type="VES",
             )
 
@@ -206,6 +202,9 @@ class VEC(gym.Env):
 
     def reset(self, seed=None): # type: ignore # مطمئن نیستم چرا گیر می‌داد به این
         super().reset(seed=seed)
+        if seed is not None:
+            self._python_rng = random.Random(seed)
+            self.dag_generator.rng = self._python_rng
 
         self._build_devices()
         self.reward_calculator.reset()
@@ -219,6 +218,14 @@ class VEC(gym.Env):
         )
         self.scheduler.update_available_nodes()
         self.previous_makespan = 0.0
+        self.trajectory_buffers = {
+            vehicle_id: deque(maxlen=self.history_len)
+            for vehicle_id in range(self.num_ve)
+        }
+        self.location_buffers = {
+            device_id: deque(maxlen=self.history_len)
+            for device_id in self.devices
+        }
         for vehicle_id in range(self.num_ve):
 
             state = [
