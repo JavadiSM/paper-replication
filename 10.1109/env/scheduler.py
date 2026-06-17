@@ -2,7 +2,7 @@ from collections import deque
 
 import networkx as nx
 import numpy as np
-
+from copy import deepcopy
 
 class Processor:
     """
@@ -130,6 +130,8 @@ class Scheduler:
                 pred_device=pred_device,
                 target_device=target_device,
             )
+            # print("tx, pred ct")
+            # print(tx_time,pred_ct)
             ready_times.append(pred_ct + tx_time)
 
         return max(ready_times) if ready_times else 0.0
@@ -151,7 +153,7 @@ class Scheduler:
             cpu_cycles=cpu_cycles,
             ready_time=predecessor_ready,
         )
-
+        # print(result)
         self.node_finish_times[node_id] = result["CT"]
         self.node_schedule_info[node_id] = {
             "device_id": device_id,
@@ -201,97 +203,6 @@ class Scheduler:
 
         return True
 
-    def _empty_processor_times(self):
-        return {
-            dev_id: [0.0 for _ in dev.processors]
-            for dev_id, dev in self.devices.items()
-        }
-
-    def _reserve_scheduled_nodes(self, proc_available, ct_cache):
-        for node, info in self.node_schedule_info.items():
-            ct_cache[node] = info["CT"]
-            dev_id = info["device_id"]
-            proc_idx = info["processor_id"]
-            proc_available[dev_id][proc_idx] = max(
-                proc_available[dev_id][proc_idx],
-                info["CT"],
-            )
-
-    def _simulate_node(self, node, device_id, proc_available, ct_cache):
-        device = self.devices[device_id]
-        ready_time = 0.0
-
-        for pred in self.dag.predecessors(node):
-            if pred == 0:
-                pred_ct = 0.0
-                pred_device = self.devices[node[0]]
-            else:
-                pred_ct = ct_cache[pred]
-
-                if pred in self.node_schedule_info:
-                    pred_device = self.devices[self.node_schedule_info[pred]["device_id"]]
-                else:
-                    pred_device = self.devices[pred[0]]
-
-            tx_time = self._edge_transfer_time(
-                pred=pred,
-                node_id=node,
-                pred_device=pred_device,
-                target_device=device,
-            )
-            ready_time = max(ready_time, pred_ct + tx_time)
-
-        exec_time = self.dag.nodes[node]["cpu_cycles"] / device.compute_power
-        proc_list = proc_available[device_id]
-        proc_idx = int(np.argmin(proc_list))
-        est = max(ready_time, proc_list[proc_idx])
-        ct = est + exec_time
-        proc_list[proc_idx] = ct
-        ct_cache[node] = ct
-
-    def _end_nodes(self):
-        tuple_nodes = [n for n in self.dag.nodes if isinstance(n, tuple)]
-        end_id = max(n[1] for n in tuple_nodes)
-        return [n for n in tuple_nodes if n[1] == end_id]
-
-    def estimate_mean_cft(self):
-        ct_cache = {}
-        proc_available = self._empty_processor_times()
-        self._reserve_scheduled_nodes(proc_available, ct_cache)
-
-        for node in nx.topological_sort(self.dag):
-            if node == 0 or node in ct_cache or not isinstance(node, tuple):
-                continue
-
-            # Future unscheduled nodes are completed by the local producer VE.
-            self._simulate_node(
-                node=node,
-                device_id=node[0],
-                proc_available=proc_available,
-                ct_cache=ct_cache,
-            )
-
-        cfts = [ct_cache[n] for n in self._end_nodes()]
-        return float(np.mean(cfts))
-
-    def estimate_local_mean_cft(self):
-        ct_cache = {}
-        proc_available = self._empty_processor_times()
-
-        for node in nx.topological_sort(self.dag):
-            if node == 0 or not isinstance(node, tuple):
-                continue
-
-            self._simulate_node(
-                node=node,
-                device_id=node[0],
-                proc_available=proc_available,
-                ct_cache=ct_cache,
-            )
-
-        cfts = [ct_cache[n] for n in self._end_nodes()]
-        return float(np.mean(cfts))
-
 
 def visualize_env(devices):
     import matplotlib.pyplot as plt
@@ -333,15 +244,44 @@ def visualize_env(devices):
     plt.axis("equal")
     plt.show()
 
-
+def main():
+    devices = {
+        0: ComputeNode(
+            node_id=0,
+            compute_power=1e9,
+            num_processors=1,
+            x=0,
+            y=0,
+            node_type="VE",
+        ),
+        1: ComputeNode(
+            node_id=1,
+            compute_power=1e9,
+            num_processors=1,
+            x=80,
+            y=80,
+            node_type="VE",
+        ),
+        2: ComputeNode(
+            node_id=2,
+            compute_power=10e9,
+            num_processors=4,
+            x=50,
+            y=50,
+            node_type="VES",
+        ),
+    }
+    x = deepcopy(devices)
+    return
 if __name__ == "__main__":
+
     from dag_generator import DAGGenerator
     from transmission import TransmissionModel
 
     dag = DAGGenerator(num_tasks=2, num_nodes=10, max_out_degree=3).generate()
 
     transmission_model = TransmissionModel()
-
+    
     devices = {
         0: ComputeNode(
             node_id=0,
@@ -370,6 +310,7 @@ if __name__ == "__main__":
     }
     visualize_env(devices)
     scheduler = Scheduler(dag=dag, transmission_model=transmission_model, devices=devices)
+    x = deepcopy(scheduler)
     available_nodes = [n for n in dag.nodes if dag.nodes[n]["available"] == 1]
 
     print("Available Nodes:", available_nodes)

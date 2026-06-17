@@ -25,58 +25,174 @@ def node_sort_key(node):
 
     return (2, node, node)
 
+import numpy as np
+
+import numpy as np
+import random
+from collections import defaultdict
+from collections import defaultdict
+import random
+
+
+class MobilityDataset:
+    def __init__(self, dataset_path="simulation_results1.txt"):
+        self.dataset_path = dataset_path
+        self.traces = self._load_dataset()
+
+    def _load_dataset(self):
+        traces = defaultdict(list)
+
+        with open(self.dataset_path, "r") as f:
+            next(f)  # skip header
+
+            for line in f:
+                parts = line.strip().split()
+
+                if len(parts) < 6:
+                    continue
+
+                t, vid, x, y, speed, angle = parts
+
+                traces[vid].append(
+                    (
+                        float(t),
+                        float(x),
+                        float(y),
+                        float(speed),
+                        float(angle),
+                    )
+                )
+
+        for vid in traces:
+            traces[vid].sort(key=lambda r: r[0])
+
+        return dict(traces)
+
+    def assign_vehicle_ids(self, num_vehicles, rng):
+        """
+        Returns:
+            {
+                env_vehicle_id : trace_id
+            }
+        """
+
+        trace_ids = list(self.traces.keys())
+
+        if len(trace_ids) == 0:
+            raise RuntimeError("No vehicle traces found in mobility dataset.")
+
+        rng.shuffle(trace_ids)
+
+        mapping = {}
+
+        available = trace_ids.copy()
+
+        for vehicle_id in range(num_vehicles):
+
+            if not available:
+                available = trace_ids.copy()
+
+            chosen = rng.choice(available)
+            available.remove(chosen)
+
+            mapping[vehicle_id] = chosen
+
+        return mapping
+import numpy as np
+
+
 class VehicleMobility:
-    """Simple continuous mobility model for a vehicle."""
-    def __init__(self, x, y, world_size, rng):
-        self.rng = rng
-        self.x = float(x)
-        self.y = float(y)
-        self.world_size = world_size
+    """
+    Replay mobility from SUMO trace.
+    """
 
-        self.velocity = self.rng.uniform(5.0, 15.0)
-        self.acceleration = self.rng.uniform(-0.5, 0.5)
-        self.heading = self.rng.uniform(0.0, 2 * np.pi)
-        self.angular_velocity = self.rng.uniform(-0.05, 0.05)
+    def __init__(self, trace, device_type="VE"):
+
+        self.device_type = device_type
+
+        self.trace = trace
+        self.trace_index = 0
+
+        self.x = 0.0
+        self.y = 0.0
+
+        self.velocity = 0.0
+        self.acceleration = 0.0
+        self.heading = 0.0
+
+        self.last_time = None
+
+        if self.device_type == "VES":
+            return
+
+        if len(self.trace) > 0:
+            self._apply_state(self.trace[0])
+
+    def _apply_state(self, record):
+
+        t, x, y, speed, angle = record
+
+        prev_velocity = self.velocity
+
+        if self.last_time is None:
+            self.acceleration = 0.0
+        else:
+            dt = max(t - self.last_time, 1e-6)
+            self.acceleration = (speed - prev_velocity) / dt
+
+        self.last_time = t
+
+        self.x = x
+        self.y = y
+        self.velocity = speed
+
+        # radians
+        self.heading = np.deg2rad(angle)
+
     def step(self, dt=1.0):
-        self.acceleration += self.rng.normal(0.0, 0.05)
-        self.acceleration = np.clip(self.acceleration, -1.0, 1.0)
 
-        self.angular_velocity += self.rng.normal(0.0, 0.005)
-        self.angular_velocity = np.clip(self.angular_velocity, -0.1, 0.1)
+        if self.device_type == "VES":
+            return
 
-        self.heading += self.angular_velocity * dt
-        self.velocity += self.acceleration * dt
-        self.velocity = np.clip(self.velocity, 1.0, 25.0)
+        if not self.trace:
+            return
 
-        self.x += np.cos(self.heading) * self.velocity * dt
-        self.y += np.sin(self.heading) * self.velocity * dt
+        if self.trace_index + 1 >= len(self.trace):
+            return
 
-        if self.x < 0 or self.x > self.world_size:
-            self.heading = np.pi - self.heading
-            self.x = np.clip(self.x, 0, self.world_size)
+        self.trace_index += 1
 
-        if self.y < 0 or self.y > self.world_size:
-            self.heading = -self.heading
-            self.y = np.clip(self.y, 0, self.world_size)
-
+        self._apply_state(
+            self.trace[self.trace_index]
+        )
+        
 class VEC(gym.Env):
     """
     main body of paper
     """
     def __init__(self, num_ve:int = 5, num_ves:int = 1, num_nodes:int = 5,history_len:int =4):
-        
+        """
+        ((xmin, ymin), (xmax, ymax)) 
+        (290.62, 313.76) - (4215.21, 3300.04)
+        """
         super(VEC, self).__init__()
         self.num_ve = num_ve
         self.num_ves = num_ves
         self.num_nodes = num_nodes
         self.world_size = 10
+
+        ((self.xmin, self.ymin), (self.xmax, self.ymax)) =  ((290.62, 313.76) , (4215.21, 3300.04))
+
+        self.mobility_dataset = MobilityDataset(
+            dataset_path="simulation_results1.txt"
+        )
         self.num_locations = None
         self._num_task_graph_nodes = num_ve * (num_nodes + 1) + 1
         self._python_rng = random.Random()
         self.dag_generator = DAGGenerator(
             num_tasks=num_ve,
             num_nodes=num_nodes,
-            max_out_degree=min(6, num_nodes),
+            max_out_degree=(5 * num_nodes //6),
             rng=self._python_rng,
         )
 
@@ -165,40 +281,86 @@ class VEC(gym.Env):
         self.reset()
 
     def _build_devices(self):
+
         self.devices = {}
         self.mobility_models = {}
 
+        vehicle_mapping = (
+            self.mobility_dataset.assign_vehicle_ids(
+                self.num_ve,
+                self._python_rng,
+            )
+        )
+
+        self.vehicle_trace_mapping = vehicle_mapping
+
+        # -----------------------
+        # VEHICLES
+        # -----------------------
+
         for vehicle_id in range(self.num_ve):
-            x = self.np_random.uniform(0, self.world_size)
-            y = self.np_random.uniform(0, self.world_size)
+
+            trace_id = vehicle_mapping[vehicle_id]
+
+            trace = self.mobility_dataset.traces[trace_id]
+
+            mobility = VehicleMobility(
+                trace=trace,
+                device_type="VE",
+            )
+
+            self.mobility_models[vehicle_id] = mobility
 
             self.devices[vehicle_id] = ComputeNode(
                 node_id=vehicle_id,
                 compute_power=1e9,
                 num_processors=1,
-                x=x,
-                y=y,
+                x=mobility.x,
+                y=mobility.y,
                 node_type="VE",
             )
-            self.mobility_models[vehicle_id] = VehicleMobility(
-                x=float(x),
-                y=float(y),
-                world_size=self.world_size,
-                rng=self.np_random,
-            )
+
+        # -----------------------
+        # VES
+        # -----------------------
 
         for ves_id in range(self.num_ves):
+
             device_id = self.num_ve + ves_id
+
+            x = float(
+                self.np_random.uniform(
+                    self.xmin,self.xmax
+                )
+            )
+
+            y = float(
+                self.np_random.uniform(
+                    self.ymin,self.ymax
+                )
+            )
+
             self.devices[device_id] = ComputeNode(
                 node_id=device_id,
                 compute_power=10e9,
                 num_processors=4,
-                x=float(self.np_random.uniform(self.world_size / 4, 3 * self.world_size / 4)),
-                y=float(self.np_random.uniform(self.world_size / 4, 3 * self.world_size / 4)),
+                x=x,
+                y=y,
                 node_type="VES",
             )
 
+            ves_mobility = VehicleMobility(
+                trace=[],
+                device_type="VES",
+            )
+
+            ves_mobility.x = x
+            ves_mobility.y = y
+
+            self.mobility_models[device_id] = ves_mobility
+
         self.num_locations = len(self.devices)
+
 
     def reset(self, seed=None): # type: ignore # مطمئن نیستم چرا گیر می‌داد به این
         super().reset(seed=seed)
@@ -281,7 +443,8 @@ class VEC(gym.Env):
         )
 
         return valid_nodes
-    
+
+
     def _map_continuous_to_node(self, value):
 
         valid_nodes = self._get_valid_nodes()
@@ -291,39 +454,42 @@ class VEC(gym.Env):
 
         value = np.clip(value, -1.0, 1.0)
 
-        scaled = (value + 1.0) / 2.0
+        scaled = (value + 1.0) / 2.0  # [0,1]
 
-        index = int(
-            scaled * len(valid_nodes)
-        )
+        # continuous index (NOT integer yet)
+        idx = scaled * (len(valid_nodes) - 1)
 
-        index = min(
-            index,
-            len(valid_nodes) - 1
-        )
+        i = int(np.floor(idx))
+        alpha = idx - i  # fractional part
 
-        return valid_nodes[index]
-    
+        # boundary safety
+        i2 = min(i + 1, len(valid_nodes) - 1)
+
+        idx = int(np.rint(idx))
+        idx = np.clip(idx, 0, len(valid_nodes)-1)
+
+        return valid_nodes[idx]
+
     def _map_continuous_to_location(self, value):
 
-        device_ids = sorted(
-            list(self.devices.keys())
-        )
+        device_ids = sorted(list(self.devices.keys()))
 
         value = np.clip(value, -1.0, 1.0)
 
         scaled = (value + 1.0) / 2.0
 
-        index = int(
-            scaled * len(device_ids)
-        )
+        idx = scaled * (len(device_ids) - 1)
 
-        index = min(
-            index,
-            len(device_ids) - 1
-        )
+        i = int(np.floor(idx))
+        alpha = idx - i
 
-        return device_ids[index]
+        i2 = min(i + 1, len(device_ids) - 1)
+
+
+        idx = int(np.rint(idx))
+        idx = np.clip(idx, 0, len(device_ids)-1)
+
+        return device_ids[idx]
 
 
     def _is_schedulable(self, node):
@@ -346,10 +512,17 @@ class VEC(gym.Env):
         }
 
     def _update_vehicle_positions(self):
+
         for device_id, mobility in self.mobility_models.items():
-            mobility.step(dt=1.0)
+
+            if self.devices[device_id].node_type == "VES":
+                continue
+
+            mobility.step()
+
             self.devices[device_id].x = mobility.x
             self.devices[device_id].y = mobility.y
+
             state = [
                 mobility.x,
                 mobility.y,
@@ -458,7 +631,7 @@ class VEC(gym.Env):
 
         terminated = False
         truncated = False
-        invalid_reward = -1.0
+        invalid_reward = -10.0
 
         node_signal = float(action[0])
         location_signal = float(action[1])
