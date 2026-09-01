@@ -62,7 +62,7 @@ class TransmissionModel:
 
         return max(rate, 1e-3) # حداقل نرخ انتقال بسیار کوچک برای جلوگیری از تقسیم بر صفر
 
-    def transmission_time(self, data_size_kb, distance_m, same_location=False):
+    def transmission_time(self, data_size_kb, distance_m, VES, same_location=False):
         """
         محاسبه زمان انتقال داده (خروجی به ثانیه)
         data_size_kb: اندازه داده به کیلوبایت
@@ -73,36 +73,16 @@ class TransmissionModel:
         # تبدیل کیلوبایت به بیت: KB * 1024 * 8
         data_size_bits = data_size_kb * 1024 * 8
         rate = self.transmission_rate(distance_m)
-
+        if VES:
+            rate *= 1.1
         return data_size_bits / rate
 
-    def upload_time(self, task_data_kb, distance_m):
-        return self.transmission_time(
-            data_size_kb=task_data_kb,
-            distance_m=distance_m,
-            same_location=False
-        )
-
-    def download_time(self, result_data_kb, distance_m, is_offloaded=True):
-        if not is_offloaded:
-            return 0.0
-        return self.transmission_time(
-            data_size_kb=result_data_kb,
-            distance_m=distance_m,
-            same_location=False
-        )
 
     @staticmethod
     def euclidean_distance(x1, y1, x2, y2):
         return math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
 
-    def transmission_threshold_check(self, src_position, dst_position, threshold_sec, data_size_kb):
-        distance = self.euclidean_distance(
-            src_position[0], src_position[1],
-            dst_position[0], dst_position[1]
-        )
-        t = self.transmission_time(data_size_kb=data_size_kb, distance_m=distance)
-        return t <= threshold_sec
+
 
 
 if __name__ == "__main__":
